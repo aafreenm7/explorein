@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>EXPLOREIN – Indoor Navigation</title>
+
+<style>
+:root{
+  --bg:#f6f8fb;
+  --navy:#1f3a5f;
+  --teal:#2aa6a1;
+
+  --corridor:#e0f2fe;
+
+  --classroom:#dbeafe;
+  --lab:#ede9fe;
+  --washroom:#dcfce7;
+  --faculty:#ffedd5;
+
+  --node:#475569;
+  --start:#16a34a;
+  --end:#dc2626;
+  --path:#f59e0b;
+}
+
+body{
+  margin:0;
+  font-family:Arial, sans-serif;
+  background:var(--bg);
+}
+
+header{
+  background:linear-gradient(135deg,var(--navy),var(--teal));
+  color:white;
+  padding:16px 40px;
+}
+
+.container{
+  display:grid;
+  grid-template-columns:320px 1fr;
+  gap:20px;
+  padding:20px;
+}
+
+.panel,.map-box{
+  background:white;
+  padding:20px;
+  border-radius:16px;
+  box-shadow:0 10px 25px rgba(0,0,0,0.1);
+}
+
+select,button{
+  width:100%;
+  padding:10px;
+  margin-top:10px;
+  border-radius:10px;
+}
+
+button{
+  border:none;
+  background:linear-gradient(135deg,var(--navy),var(--teal));
+  color:white;
+  font-weight:bold;
+}
+
+svg text{ font-size:12px; }
+
+.corridor{ fill:var(--corridor); }
+.room{ stroke:#334155; stroke-width:2; }
+
+.classroom{ fill:var(--classroom); }
+.lab{ fill:var(--lab); }
+.washroom{ fill:var(--washroom); }
+.faculty{ fill:var(--faculty); }
+
+/* Nodes */
+.node{ fill:var(--node); }
+.node.start{ fill:var(--start); }
+.node.end{ fill:var(--end); }
+
+/* Corridor nodes hidden */
+.node.corridor-node{
+  opacity:0;
+  pointer-events:none;
+}
+
+/* Path */
+.path{
+  stroke:var(--path);
+  stroke-width:6;
+  fill:none;
+  stroke-linecap:round;
+  stroke-dasharray:12;
+  animation:walk 1.2s linear infinite;
+}
+
+@keyframes walk{
+  to{ stroke-dashoffset:-24; }
+}
+</style>
+</head>
+
+<body>
+
+<header>
+  <h2>EXPLOREIN – Indoor Navigation System</h2>
+</header>
+
+<div class="container">
+
+<div class="panel">
+  <h3>Navigation</h3>
+
+  <label>Floor</label>
+  <select id="floor" onchange="renderFloor()">
+    <option value="2">2nd Floor</option>
+    <option value="3" selected>3rd Floor</option>
+    <option value="4">4th Floor</option>
+  </select>
+
+  <label>Start (Outside Room)</label>
+  <select id="start"></select>
+
+  <label>Destination</label>
+  <select id="end"></select>
+
+  <button onclick="navigate()">Find Path</button>
+  <button onclick="clearPath()" style="background:#e5e7eb;color:#111">Clear</button>
+  <hr>
+
+<h3>Step Tracker</h3>
+
+<button onclick="startTracking()">Start Walking</button>
+<button onclick="stopTracking()" style="background:#fee2e2;color:#7f1d1d">Stop</button>
+
+<p>Steps: <strong><span id="steps">0</span></strong></p>
+<p>Distance Walked: <strong><span id="distance">0</span></strong> meters</p>
+
+</div>
+
+<div class="map-box">
+  <svg id="svg" width="1200" height="520"></svg>
+</div>
+
+</div>
+
+<script>
+/* ---------------- FLOOR DATA ---------------- */
+
+const floors={
+2:{ rooms:[
+  ["M-201","A","classroom",80],
+  ["M-202","A","classroom",200],
+  ["DOM Lab","A","lab",320],
+  ["TOM Lab","A","lab",460],
+  ["Staff Room","A","faculty",600],
+  ["PG Design Lab","A","lab",760],
+  ["M-207","A","classroom",920],
+
+  ["Geotech Lab","B","lab",80],
+  ["Transportation Lab","B","lab",220],
+  ["CR 9205","B","classroom",360],
+  ["CR 9206","B","classroom",500],
+  ["Env Engg Lab","B","lab",660],
+  ["Boys Washroom","B","washroom",840]
+]},
+3:{ rooms:[
+  ["M-301","A","classroom",80],
+  ["M-302","A","classroom",200],
+  ["M-303","A","classroom",320],
+  ["M-304","A","classroom",460],
+  ["Dept Library","A","faculty",600],
+  ["Girls Washroom","A","washroom",760],
+
+  ["Basic Civil Lab","B","lab",80],
+  ["Engg Mechanics Lab","B","lab",240],
+  ["CR 9305","B","classroom",400],
+  ["Surveying Lab","B","lab",560],
+  ["CR 9308","B","classroom",720],
+  ["Tutorial Room","B","classroom",900]
+]},
+4:{ rooms:[
+  ["Drawing Hall","A","classroom",80],
+  ["3D PLM Lab","A","lab",240],
+  ["CR M-402","A","classroom",400],
+  ["Staff Room","A","faculty",560],
+  ["Metallurgy Lab","A","lab",720],
+  ["CR M-405","A","classroom",880],
+
+  ["LRDC Seminar Hall","B","classroom",80],
+  ["Mechatronics Lab","B","lab",300],
+  ["AutoCAD Lab","B","lab",520],
+  ["Computer Lab","B","lab",740],
+  ["Drawing Hall 9407","B","classroom",940]
+]}
+};
+
+let graph={},coords={};
+
+/* ---------------- RENDER FLOOR ---------------- */
+
+function renderFloor(){
+  graph={}; coords={};
+  start.innerHTML=""; end.innerHTML="";
+  svg.innerHTML="";
+
+  const corridorY=250;
+  svg.innerHTML+=`<rect x="40" y="${corridorY}" width="1120" height="40" class="corridor"/>`;
+
+  let corridorNodes=[];
+
+  floors[floor.value].rooms.forEach((r,i)=>{
+    const [name,wing,type,x]=r;
+    const y=wing==="B"?120:330;
+    const cx=x+60;
+    const cNode="C"+i;
+    const rNode="R"+i;
+
+    svg.innerHTML+=`
+      <rect x="${x}" y="${y}" width="120" height="70"
+        class="room ${type}"/>
+      <text x="${x+6}" y="${y+42}">${name}</text>
+
+      <circle id="${cNode}" cx="${cx}" cy="${corridorY+20}"
+        r="7" class="node corridor-node"/>
+      <circle id="${rNode}" cx="${cx}"
+        cy="${wing==="B"?corridorY-20:corridorY+60}"
+        r="6" class="node"/>
+    `;
+
+    start.innerHTML+=`<option value="${cNode}">Outside ${name}</option>`;
+    end.innerHTML+=`<option value="${rNode}">${name}</option>`;
+
+    graph[cNode]={};
+    graph[rNode]={};
+
+    coords[cNode]=[cx,corridorY+20];
+    coords[rNode]=[cx,wing==="B"?corridorY-20:corridorY+60];
+
+    graph[cNode][rNode]=1;
+    graph[rNode][cNode]=1;
+
+    corridorNodes.push({id:cNode,x:cx});
+  });
+
+  corridorNodes.sort((a,b)=>a.x-b.x);
+  for(let i=1;i<corridorNodes.length;i++){
+    const a=corridorNodes[i-1].id;
+    const b=corridorNodes[i].id;
+    graph[a][b]=5;
+    graph[b][a]=5;
+  }
+}
+
+/* ---------------- DIJKSTRA ---------------- */
+
+function dijkstra(start,end){
+  let dist={},prev={},Q=Object.keys(graph);
+  Q.forEach(v=>dist[v]=Infinity);
+  dist[start]=0;
+
+  while(Q.length){
+    Q.sort((a,b)=>dist[a]-dist[b]);
+    let u=Q.shift();
+    if(u===end) break;
+
+    for(let v in graph[u]){
+      let alt=dist[u]+graph[u][v];
+      if(alt<dist[v]){
+        dist[v]=alt;
+        prev[v]=u;
+      }
+    }
+  }
+
+  let path=[],u=end;
+  while(u){ path.unshift(u); u=prev[u]; }
+  return path;
+}
+
+/* ---------------- NAVIGATION ---------------- */
+
+function navigate(){
+  clearPath();
+  const s=start.value;
+  const e=end.value;
+  const p=dijkstra(s,e);
+
+  let d="";
+  p.forEach((n,i)=>{
+    let [x,y]=coords[n];
+    d+=i?` L ${x} ${y}`:`M ${x} ${y}`;
+  });
+
+  svg.innerHTML+=`<path d="${d}" class="path"/>`;
+  document.getElementById(s).classList.add("start");
+  document.getElementById(e).classList.add("end");
+}
+
+function clearPath(){
+  document.querySelectorAll(".path").forEach(p=>p.remove());
+  document.querySelectorAll(".node")
+    .forEach(n=>n.classList.remove("start","end"));
+}
+
+renderFloor();
+/* ---------------- STEP TRACKING (iPhone Compatible) ---------------- */
+
+let steps = 0;
+let distance = 0;
+let tracking = false;
+
+// average step length (meters)
+const STEP_LENGTH = 0.75;
+
+// sensitivity (adjust if needed)
+const STEP_THRESHOLD = 12;
+let lastStepTime = 0;
+
+function startTracking() {
+  steps = 0;
+  distance = 0;
+  tracking = true;
+
+  document.getElementById("steps").innerText = steps;
+  document.getElementById("distance").innerText = distance.toFixed(2);
+
+  // iOS permission REQUIRED
+  if (
+    typeof DeviceMotionEvent !== "undefined" &&
+    typeof DeviceMotionEvent.requestPermission === "function"
+  ) {
+    DeviceMotionEvent.requestPermission()
+      .then(permissionState => {
+        if (permissionState === "granted") {
+          window.addEventListener("devicemotion", detectStep);
+        } else {
+          alert("Motion permission denied");
+        }
+      })
+      .catch(console.error);
+  } else {
+    // Android / others
+    window.addEventListener("devicemotion", detectStep);
+  }
+}
+
+function stopTracking() {
+  tracking = false;
+  window.removeEventListener("devicemotion", detectStep);
+}
+
+function detectStep(event) {
+  if (!tracking) return;
+
+  const acc = event.accelerationIncludingGravity;
+  if (!acc) return;
+
+  const magnitude = Math.sqrt(
+    acc.x * acc.x +
+    acc.y * acc.y +
+    acc.z * acc.z
+  );
+
+  const now = Date.now();
+
+  // minimum delay between steps (debounce)
+  if (magnitude > STEP_THRESHOLD && now - lastStepTime > 400) {
+    steps++;
+    lastStepTime = now;
+
+    distance = steps * STEP_LENGTH;
+
+    document.getElementById("steps").innerText = steps;
+    document.getElementById("distance").innerText = distance.toFixed(2);
+  }
+}
+
+</script>
+
+</body>
+</html>
